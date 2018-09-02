@@ -1,8 +1,10 @@
 ---
 title: "NYC Taxi Tip prediction"
 author: "David Peña"
-date: "9/1/2018"
-output: html_document
+date: "9/2/2018"
+output:
+  html_document: default
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -13,7 +15,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 This is an R Markdown with the process followed to predict tips in Yellow taxis in NYC <http://www.nyc.gov/html/tlc/html/about/trip_record_data.shtml>.
 
-The months analysed in this model are **March, June and November*.
+The months analysed in this model are *March, June and November*.
 We donwload the data and store in our hard drive and use fread due amount of data to be read. Also we need to skip blank lines since there is one after file header
 
 ```{r data, message= F, warning =F}
@@ -26,12 +28,10 @@ library(lubridate)
 library(dummies)
 library(xgboost)
 library(caret)
-library(randomForest)
  taxi_mar =fread('yellow_tripdata_2017-03.csv', sep = ",", header = TRUE, blank.lines.skip = TRUE)
  taxi_jun = fread('yellow_tripdata_2017-06.csv',sep = ",", header = TRUE, blank.lines.skip = TRUE)
  taxi_nov =fread('yellow_tripdata_2017-11.csv',sep = ",", header = TRUE, blank.lines.skip = TRUE)
  str(taxi_mar)
-
 ```
 
 ## Data cleanup:
@@ -65,7 +65,7 @@ taxi_jun$total_amount <-carri_rem(taxi_jun$total_amount)
 taxi_nov$total_amount <- carri_rem(taxi_nov$total_amount)
 ```
 
-We merge all data together and change some of the values to proper format (categorical variables).
+* We merge all data together and change some of the values to proper format (categorical variables).
 
 ```{r categorical}
 total <-rbind(taxi_mar,taxi_jun,taxi_nov)
@@ -74,13 +74,13 @@ total$DOLocationID <-as.character(total$DOLocationID)
 total$PULocationID <-as.character(total$PULocationID)
 total$payment_type <- as.character(total$payment_type)
 ```
-Once we have this initial cleanup we merge all data together and do summary to get first feeling of variables
+* Once we have this initial cleanup we merge all data together and do summary to get first feeling of variables
 
 ```{r summary}
 summary(total)
 ```
 
-* We remove VendorID since most of them are null.
+* We remove VendorID since most of them are NAs.
 ```{r vendor}
 total$VendorID <-NULL
 ```
@@ -117,7 +117,6 @@ ggplot(card, aes(tip_amount))+geom_histogram(binwidth = 0.5)+xlim(c(-5,20))
 card <- card[card$tip_amount >=0,]
 ```
 ## Feature Engineering:
-
 * Having in mind that we have time series we see the need to enrich the dataset extracting hour of the day, day of the week, day of month,...For this test we only do for the dropoff time since we assume most of the values (except the seconds and maybe hours) will be the same.
 We create a field that excludes tip from total amount of money to use instead of total amount. Since in the API we should use this as parameter (without the tip)
 
@@ -130,17 +129,18 @@ card$trip_time <- difftime(card$tpep_dropoff_datetime,card$tpep_pickup_datetime,
 card$tpep_pickup_datetime <- NULL
 card$tpep_dropoff_datetime <- NULL
 card$total_no_tip <- card$total_amount-card$tip_amount
-
 ```
-* We plot some of the time variables and see that are peaks from 7 in the morning becoming flat at afternoon and additional peak at 19-20(back home?)
+* We plot some of the time variables and see that are peaks from 7 in the morning becoming flat at afternoon and additional peak at 19-22(back home?)
 ```{r hour}
 ggplot(card, aes(hour))+geom_histogram(binwidth = 1)
 ```
 
+* We see that last days of week and weekend is where the taxi is used most.
 ```{r day}
 ggplot(card, aes(week_day))+geom_histogram(binwidth = 1)
 ```
-* We investigate a bit on how the total amount of money is distributed and we also remove those with 0 in total amount.
+
+* We investigate a bit on how the total amount of money is distributed and we also remove those with 0 in total amount. We see a well distributed data being most of the trips around 8-15$.
 
 ```{r total, message= F, warning =F}
 ggplot(card, aes(total_amount))+geom_histogram(binwidth = 1)+xlim(c(0,20))
@@ -172,8 +172,8 @@ taxi_test <- sample_model[-index,]
 
 
 ## Model:
-As mentioned before we will use XGboost model with a regression to predict tip values. This model is good in terms of efficiency and output for this and other prediction models (more efficient than random forest).
-
+As mentioned before we will use XGboost model with a regression to predict tip values. This model is good in terms of efficiency (parallel processing) and output for this and other prediction models (more efficient than random forest). Also this model is one of the most used 
+on Kaggle, so definetely this is a good indication that is one of the models to take into consideration.
 
 ```{r model}
 xgb <- xgboost(data =data.matrix(taxi_train[,-c(6,9)]), label = data.matrix(taxi_train[,6]), nrounds = 5, metric ="Accuracy")
@@ -187,7 +187,7 @@ test_predict <- predict(xgb, data.matrix(taxi_test[,-c(6,9)]))
 ```{r confusion}
 cor(test_predict,taxi_test$tip_amount)
 ```
-# Conclusion:
+# Summary:
   * Xgboost model seems to be reliabable and fast for this prediction. Further tests with a stratified sample based on tip amoung should be 
     executed to see if behaviour remains the same or if there are discrepancies.
   * Additional analysis on how the pickup area and dropoff area is needed to see if there is correlation with the tip.
@@ -196,6 +196,12 @@ cor(test_predict,taxi_test$tip_amount)
     * Two models should be run to increase the accuracy:
       * First should be a classification model that would check if there will be a tip or not.
       * Second would be a regression model xgboost that will determine the amount of tip that will be given.
+    * Add external variables as weather, bank holidays, special events (football matches,...), to better predict the tip amount and see if there is       correlation of some of them with tip amount. Does people give extra tips if it is sunny? if it rains?...
+    *  Do further cleanup on outliers and odd values.
+    
+    
+    
+    
   
       
       
