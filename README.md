@@ -5,7 +5,7 @@ This Git contains the information and files for use in the Carto test for taxi t
 * Script for Rmarkdown can be found at folder Rscript.
 ## API creation
 For API creation we should use a simple approach to make it ligther and fast on response. We should identify what variables (existing or created during the process) are the most correlated to the tip amount.
-  * In this test it has been found that the variables more important for this prediction where.
+  * In this test it has been found that the variables more important for this prediction were.
     * Total amount of money(tip excluded).
     * Passenger count
     * Fare amount
