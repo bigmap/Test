@@ -1,0 +1,201 @@
+---
+title: "NYC Taxi Tip prediction"
+author: "David Peña"
+date: "9/1/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Carto Test
+
+This is an R Markdown with the process followed to predict tips in Yellow taxis in NYC <http://www.nyc.gov/html/tlc/html/about/trip_record_data.shtml>.
+
+The months analysed in this model are **March, June and November*.
+We donwload the data and store in our hard drive and use fread due amount of data to be read. Also we need to skip blank lines since there is one after file header
+
+```{r data, message= F, warning =F}
+setwd("/Users/davidpena/Documents/Carto_test/01_data")
+library(data.table)
+library(stringr)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(dummies)
+library(xgboost)
+library(caret)
+library(randomForest)
+ taxi_mar =fread('yellow_tripdata_2017-03.csv', sep = ",", header = TRUE, blank.lines.skip = TRUE)
+ taxi_jun = fread('yellow_tripdata_2017-06.csv',sep = ",", header = TRUE, blank.lines.skip = TRUE)
+ taxi_nov =fread('yellow_tripdata_2017-11.csv',sep = ",", header = TRUE, blank.lines.skip = TRUE)
+ str(taxi_mar)
+
+```
+
+## Data cleanup:
+
+Some data fields are imported as character so we need to create a function to convert those to date time:
+
+```{r date, message = FALSE}
+date_func <- function(date_field){
+  c_date <- as.POSIXct(date_field, format = "%Y-%m-%d %H:%M:%S")
+  return(c_date)
+}
+
+taxi_mar$tpep_pickup_datetime = date_func(taxi_mar$tpep_pickup_datetime)
+taxi_mar$tpep_dropoff_datetime = date_func(taxi_mar$tpep_dropoff_datetime)
+taxi_jun$tpep_pickup_datetime =date_func(taxi_jun$tpep_pickup_datetime)
+taxi_jun$tpep_dropoff_datetime =date_func(taxi_jun$tpep_dropoff_datetime)
+taxi_nov$tpep_pickup_datetime =date_func(taxi_nov$tpep_pickup_datetime)
+taxi_nov$tpep_dropoff_datetime=date_func(taxi_nov$tpep_dropoff_datetime)
+```
+
+Return carriage is found in total_amount for jun and november datasets so we clean it also with a function.
+
+```{r carriage}
+carri_rem <- function(field){
+  
+  clean_field <- str_replace_all(field, "[\r]","")
+  clean_field <- as.numeric(field)
+  return(clean_field)
+}
+taxi_jun$total_amount <-carri_rem(taxi_jun$total_amount)
+taxi_nov$total_amount <- carri_rem(taxi_nov$total_amount)
+```
+
+We merge all data together and change some of the values to proper format (categorical variables).
+
+```{r categorical}
+total <-rbind(taxi_mar,taxi_jun,taxi_nov)
+total$RatecodeID <-as.character(total$RatecodeID)
+total$DOLocationID <-as.character(total$DOLocationID)
+total$PULocationID <-as.character(total$PULocationID)
+total$payment_type <- as.character(total$payment_type)
+```
+Once we have this initial cleanup we merge all data together and do summary to get first feeling of variables
+
+```{r summary}
+summary(total)
+```
+
+* We remove VendorID since most of them are null.
+```{r vendor}
+total$VendorID <-NULL
+```
+* We remove all values that are not paid with Card since tip is not stored and then we remove also the payment_type variable.
+```{r payment}
+card <- total[total$payment_type=='1',]
+card$payment_type <- NULL
+```
+* We remove all values with passenger =0 since it may be error.
+```{r passenger}
+table(card$passenger_count)
+card <- card[card$passenger_count!=0,]
+```
+* We remove all trips with distance = 0 due same reason as above.
+
+```{r trip_distance,message= F, warning =F}
+ggplot(card, aes(trip_distance))+geom_histogram(binwidth = 0.5)+xlim(c(0,30))
+card <- card[card$trip_distance!=0,]
+```
+* We remove rate code ID since most of values are =1. 
+```{r rate}
+table(card$RatecodeID)
+card$RatecodeID <- NULL
+```
+And we remove also the store_and_fw_flag since most of them are N.
+
+```{r flag}
+table(card$store_and_fwd_flag)
+card$store_and_fwd_flag <- NULL
+```
+To get some feeling on how tips are distributed we plot those limiting to maxium of 20 and showing negative values (likely wrong). We remove those negative values.
+```{r tip}
+ggplot(card, aes(tip_amount))+geom_histogram(binwidth = 0.5)+xlim(c(-5,20))
+card <- card[card$tip_amount >=0,]
+```
+## Feature Engineering:
+
+* Having in mind that we have time series we see the need to enrich the dataset extracting hour of the day, day of the week, day of month,...For this test we only do for the dropoff time since we assume most of the values (except the seconds and maybe hours) will be the same.
+We create a field that excludes tip from total amount of money to use instead of total amount. Since in the API we should use this as parameter (without the tip)
+
+```{r time_series, message =FALSE}
+card$week_day <-wday(card$tpep_dropoff_datetime)
+card$month_day <- mday(card$tpep_dropoff_datetime)
+card$hour <- hour(card$tpep_dropoff_datetime)
+card$year_day <- yday(card$tpep_dropoff_datetime)
+card$trip_time <- difftime(card$tpep_dropoff_datetime,card$tpep_pickup_datetime, units = "secs")
+card$tpep_pickup_datetime <- NULL
+card$tpep_dropoff_datetime <- NULL
+card$total_no_tip <- card$total_amount-card$tip_amount
+
+```
+* We plot some of the time variables and see that are peaks from 7 in the morning becoming flat at afternoon and additional peak at 19-20(back home?)
+```{r hour}
+ggplot(card, aes(hour))+geom_histogram(binwidth = 1)
+```
+
+```{r day}
+ggplot(card, aes(week_day))+geom_histogram(binwidth = 1)
+```
+* We investigate a bit on how the total amount of money is distributed and we also remove those with 0 in total amount.
+
+```{r total, message= F, warning =F}
+ggplot(card, aes(total_amount))+geom_histogram(binwidth = 1)+xlim(c(0,20))
+card <- card[card$total_amount!=0,]
+```
+
+* As we do have some variables that are categorical and we will use XGboost model, we need to convert those to dummyes. But first (due performance issues),
+we sample the data so we can run on my computer. Sample size is 100000 with a random sample (we could have checked stratified sample by Origin, End, time of day,...).
+```{r sample}
+set.seed(1)
+sample_model <- sample_n(card, size =500000)
+sample_model <- cbind(sample_model, dummy(sample_model$PULocationID, sep="_O_"))
+sample_model <-cbind(sample_model, dummy(sample_model$DOLocationID, sep="_D_"))
+sample_model$PULocationID <-NULL
+sample_model$DOLocationID <-NULL
+```
+
+* We split dataset in train and test (0.8)
+
+```{r split}
+set.seed(3456)
+index <- createDataPartition(sample_model$tip_amount, p = .8, 
+                             list = FALSE, 
+                             times = 1)
+
+taxi_train <- sample_model[index,]
+taxi_test <- sample_model[-index,]
+```
+
+
+## Model:
+As mentioned before we will use XGboost model with a regression to predict tip values. This model is good in terms of efficiency and output for this and other prediction models (more efficient than random forest).
+
+
+```{r model}
+xgb <- xgboost(data =data.matrix(taxi_train[,-c(6,9)]), label = data.matrix(taxi_train[,6]), nrounds = 5, metric ="Accuracy")
+```
+```{r results}
+importance_matrix <- xgb.importance(model =xgb)
+xgb.plot.importance(importance_matrix[1:10,])
+test_predict <- predict(xgb, data.matrix(taxi_test[,-c(6,9)]))
+```
+
+```{r confusion}
+cor(test_predict,taxi_test$tip_amount)
+```
+# Conclusion:
+  * Xgboost model seems to be reliabable and fast for this prediction. Further tests with a stratified sample based on tip amoung should be 
+    executed to see if behaviour remains the same or if there are discrepancies.
+  * Additional analysis on how the pickup area and dropoff area is needed to see if there is correlation with the tip.
+  * Same analysis for hour of the day and day of week would be interested to perform to see how those correlate with tip.
+  * Future developement:
+    * Two models should be run to increase the accuracy:
+      * First should be a classification model that would check if there will be a tip or not.
+      * Second would be a regression model xgboost that will determine the amount of tip that will be given.
+  
+      
+      
